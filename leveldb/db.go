@@ -212,15 +212,25 @@ func Open(stor storage.Storage, o *opt.Options) (db *DB, err error) {
 // The returned DB instance is safe for concurrent use.
 // The DB must be closed after use, by calling Close method.
 func OpenFile(path string, o *opt.Options) (db *DB, err error) {
-	stor, err := storage.OpenFile(path, o.GetReadOnly())
-	if err != nil {
-		return
-	}
-	db, err = Open(stor, o)
-	if err != nil {
-		stor.Close()
+	var fstor storage.Storage
+	if o == nil || len(o.DataPaths) == 0 {
+		stor, err := storage.OpenFile(path, o.GetReadOnly())
+		if err != nil {
+			return nil, err
+		}
+		fstor = stor
 	} else {
-		db.closer = stor
+		stor, err := storage.OpenMultipleFiles(path, o.GetReadOnly(), o.DataPaths)
+		if err != nil {
+			return nil, err
+		}
+		fstor = stor
+	}
+	db, err = Open(fstor, o)
+	if err != nil {
+		fstor.Close()
+	} else {
+		db.closer = fstor
 	}
 	return
 }
@@ -262,15 +272,25 @@ func Recover(stor storage.Storage, o *opt.Options) (db *DB, err error) {
 // The returned DB instance is safe for concurrent use.
 // The DB must be closed after use, by calling Close method.
 func RecoverFile(path string, o *opt.Options) (db *DB, err error) {
-	stor, err := storage.OpenFile(path, false)
-	if err != nil {
-		return
-	}
-	db, err = Recover(stor, o)
-	if err != nil {
-		stor.Close()
+	var fstor storage.Storage
+	if o == nil || len(o.DataPaths) == 0 {
+		stor, err := storage.OpenFile(path, o.GetReadOnly())
+		if err != nil {
+			return nil, err
+		}
+		fstor = stor
 	} else {
-		db.closer = stor
+		stor, err := storage.OpenMultipleFiles(path, o.GetReadOnly(), o.DataPaths)
+		if err != nil {
+			return nil, err
+		}
+		fstor = stor
+	}
+	db, err = Recover(fstor, o)
+	if err != nil {
+		fstor.Close()
+	} else {
+		db.closer = fstor
 	}
 	return
 }

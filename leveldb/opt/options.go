@@ -357,6 +357,9 @@ type Options struct {
 	//
 	// The default value is 8.
 	WriteL0SlowdownTrigger int
+
+	// multiple disks used to store sst
+	DataPaths []string
 }
 
 func (o *Options) GetAltFilters() []filter.Filter {

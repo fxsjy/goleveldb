@@ -79,7 +79,6 @@ func (db *DB) checkAndCleanFiles() error {
 			rem = append(rem, fd)
 		}
 	}
-
 	if nt != len(tmap) {
 		var mfds []storage.FileDesc
 		for num, present := range tmap {

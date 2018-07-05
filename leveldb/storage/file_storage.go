@@ -50,6 +50,40 @@ func (p int64Slice) Len() int           { return len(p) }
 func (p int64Slice) Less(i, j int) bool { return p[i] < p[j] }
 func (p int64Slice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 
+func (fs *fileStorage) getRealPath(name string) string {
+	var fdNum uint64
+	fmt.Sscanf(filepath.Base(name), "%d.ldb", &fdNum)
+	N := uint64(len(fs.dataPaths))
+	return filepath.Join(fs.dataPaths[fdNum % N], fmt.Sprintf("%06d.ldb", fdNum))
+}
+
+func (fs *fileStorage) MyOpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
+	if strings.HasSuffix(name, ".ldb") {
+		realName := fs.getRealPath(name)
+		return os.OpenFile(realName, flag, perm)
+	} else {
+		return os.OpenFile(name, flag, perm)
+	}
+}
+
+func (fs *fileStorage) MyRemove(name string) error {
+	if strings.HasSuffix(name, ".ldb") {
+		realName := fs.getRealPath(name)
+		return os.Remove(realName)
+	} else {
+		return os.Remove(name)
+	}
+}
+
+func (fs *fileStorage) MyStat(name string) (os.FileInfo, error)  {
+	if strings.HasSuffix(name, ".ldb") {
+		realName := fs.getRealPath(name)
+		return os.Stat(realName)
+	} else {
+		return os.Stat(name)
+	}
+}
+
 func writeFileSynced(filename string, data []byte, perm os.FileMode) error {
 	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
@@ -73,6 +107,7 @@ const logSizeThreshold = 1024 * 1024 // 1 MiB
 // fileStorage is a file-system backed storage.
 type fileStorage struct {
 	path     string
+	dataPaths []string
 	readOnly bool
 
 	mu      sync.Mutex
@@ -137,6 +172,58 @@ func OpenFile(path string, readOnly bool) (Storage, error) {
 		flock:    flock,
 		logw:     logw,
 		logSize:  logSize,
+	}
+	runtime.SetFinalizer(fs, (*fileStorage).Close)
+	return fs, nil
+}
+
+func OpenMultipleFiles(path string, readOnly bool, dataPaths []string) (Storage, error) {
+	if fi, err := os.Stat(path); err == nil {
+		if !fi.IsDir() {
+			return nil, fmt.Errorf("leveldb/storage: open %s: not a directory", path)
+		}
+	} else if os.IsNotExist(err) && !readOnly {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, err
+	}
+
+	flock, err := newFileLock(filepath.Join(path, "LOCK"), readOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if err != nil {
+			flock.release()
+		}
+	}()
+
+	var (
+		logw    *os.File
+		logSize int64
+	)
+	if !readOnly {
+		logw, err = os.OpenFile(filepath.Join(path, "LOG"), os.O_WRONLY|os.O_CREATE, 0644)
+		if err != nil {
+			return nil, err
+		}
+		logSize, err = logw.Seek(0, os.SEEK_END)
+		if err != nil {
+			logw.Close()
+			return nil, err
+		}
+	}
+
+	fs := &fileStorage{
+		path:     path,
+		readOnly: readOnly,
+		flock:    flock,
+		logw:     logw,
+		logSize:  logSize,
+		dataPaths: dataPaths,
 	}
 	runtime.SetFinalizer(fs, (*fileStorage).Close)
 	return fs, nil
@@ -336,7 +423,7 @@ func (fs *fileStorage) GetMeta() (FileDesc, error) {
 			}
 			return nil, err
 		}
-		if _, err := os.Stat(filepath.Join(fs.path, fsGenName(fd))); err != nil {
+		if _, err := fs.MyStat(filepath.Join(fs.path, fsGenName(fd))); err != nil {
 			if os.IsNotExist(err) {
 				fs.log(fmt.Sprintf("%s: missing target file: %s", name, fd))
 				err = os.ErrNotExist
@@ -438,6 +525,28 @@ func (fs *fileStorage) GetMeta() (FileDesc, error) {
 	return FileDesc{}, curErr
 }
 
+func (fs *fileStorage) MyList(ft FileType) (fds []FileDesc, err error) {
+	for _, path := range fs.dataPaths {
+		dir, err := os.Open(path)
+		if err != nil {
+			return fds, err
+		}
+		names, err := dir.Readdirnames(0)
+		// Close the dir first before checking for Readdirnames error.
+		if cerr := dir.Close(); cerr != nil {
+			fs.log(fmt.Sprintf("close dir: %v", cerr))
+		}
+		if err == nil {
+			for _, name := range names {
+				if fd, ok := fsParseName(name); ok && fd.Type&ft != 0 {
+					fds = append(fds, fd)
+				}
+			}
+		}
+	}
+	return
+}
+
 func (fs *fileStorage) List(ft FileType) (fds []FileDesc, err error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -459,6 +568,12 @@ func (fs *fileStorage) List(ft FileType) (fds []FileDesc, err error) {
 				fds = append(fds, fd)
 			}
 		}
+		otherSSTs, oErr := fs.MyList(ft)
+		if oErr == nil {
+			fds = append(fds, otherSSTs...)
+		} else {
+			return nil, oErr
+		}
 	}
 	return
 }
@@ -473,7 +588,7 @@ func (fs *fileStorage) Open(fd FileDesc) (Reader, error) {
 	if fs.open < 0 {
 		return nil, ErrClosed
 	}
-	of, err := os.OpenFile(filepath.Join(fs.path, fsGenName(fd)), os.O_RDONLY, 0)
+	of, err := fs.MyOpenFile(filepath.Join(fs.path, fsGenName(fd)), os.O_RDONLY, 0)
 	if err != nil {
 		if fsHasOldName(fd) && os.IsNotExist(err) {
 			of, err = os.OpenFile(filepath.Join(fs.path, fsGenOldName(fd)), os.O_RDONLY, 0)
@@ -501,7 +616,7 @@ func (fs *fileStorage) Create(fd FileDesc) (Writer, error) {
 	if fs.open < 0 {
 		return nil, ErrClosed
 	}
-	of, err := os.OpenFile(filepath.Join(fs.path, fsGenName(fd)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	of, err := fs.MyOpenFile(filepath.Join(fs.path, fsGenName(fd)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return nil, err
 	}
@@ -522,7 +637,7 @@ func (fs *fileStorage) Remove(fd FileDesc) error {
 	if fs.open < 0 {
 		return ErrClosed
 	}
-	err := os.Remove(filepath.Join(fs.path, fsGenName(fd)))
+	err := fs.MyRemove(filepath.Join(fs.path, fsGenName(fd)))
 	if err != nil {
 		if fsHasOldName(fd) && os.IsNotExist(err) {
 			if e1 := os.Remove(filepath.Join(fs.path, fsGenOldName(fd))); !os.IsNotExist(e1) {

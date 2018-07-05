@@ -24,7 +24,7 @@ var cases = []struct {
 }{
 	{nil, "000100.log", TypeJournal, 100},
 	{nil, "000000.log", TypeJournal, 0},
-	{[]string{"000000.sst"}, "000000.ldb", TypeTable, 0},
+	{[]string{"000000.sst"}, "00000000.ldb", TypeTable, 0},
 	{nil, "MANIFEST-000002", TypeManifest, 2},
 	{nil, "MANIFEST-000007", TypeManifest, 7},
 	{nil, "9223372036854775807.log", TypeJournal, 9223372036854775807},

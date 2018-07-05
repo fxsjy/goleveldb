@@ -109,7 +109,7 @@ func (fd FileDesc) String() string {
 	case TypeJournal:
 		return fmt.Sprintf("%06d.log", fd.Num)
 	case TypeTable:
-		return fmt.Sprintf("%06d.ldb", fd.Num)
+		return fmt.Sprintf("%08d.ldb", fd.Num)
 	case TypeTemp:
 		return fmt.Sprintf("%06d.tmp", fd.Num)
 	default:

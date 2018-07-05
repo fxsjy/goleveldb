@@ -54,11 +54,11 @@ func (fs *fileStorage) getRealPath(name string) string {
 	var fdNum uint64
 	fmt.Sscanf(filepath.Base(name), "%d.ldb", &fdNum)
 	N := uint64(len(fs.dataPaths))
-	return filepath.Join(fs.dataPaths[fdNum % N], fmt.Sprintf("%06d.ldb", fdNum))
+	return filepath.Join(fs.dataPaths[fdNum % N], fmt.Sprintf("%08d.ldb", fdNum))
 }
 
 func (fs *fileStorage) MyOpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
-	if strings.HasSuffix(name, ".ldb") {
+	if len(fs.dataPaths) > 0 && strings.HasSuffix(name, ".ldb") {
 		realName := fs.getRealPath(name)
 		return os.OpenFile(realName, flag, perm)
 	} else {
@@ -67,7 +67,7 @@ func (fs *fileStorage) MyOpenFile(name string, flag int, perm os.FileMode) (*os.
 }
 
 func (fs *fileStorage) MyRemove(name string) error {
-	if strings.HasSuffix(name, ".ldb") {
+	if len(fs.dataPaths) > 0 && strings.HasSuffix(name, ".ldb") {
 		realName := fs.getRealPath(name)
 		return os.Remove(realName)
 	} else {
@@ -76,7 +76,7 @@ func (fs *fileStorage) MyRemove(name string) error {
 }
 
 func (fs *fileStorage) MyStat(name string) (os.FileInfo, error)  {
-	if strings.HasSuffix(name, ".ldb") {
+	if len(fs.dataPaths) > 0 && strings.HasSuffix(name, ".ldb") {
 		realName := fs.getRealPath(name)
 		return os.Stat(realName)
 	} else {
@@ -733,7 +733,7 @@ func fsGenName(fd FileDesc) string {
 	case TypeJournal:
 		return fmt.Sprintf("%06d.log", fd.Num)
 	case TypeTable:
-		return fmt.Sprintf("%06d.ldb", fd.Num)
+		return fmt.Sprintf("%08d.ldb", fd.Num)
 	case TypeTemp:
 		return fmt.Sprintf("%06d.tmp", fd.Num)
 	default:

@@ -21,6 +21,10 @@ import (
 	"time"
 )
 
+const (
+    SST_FORMAT = "%08d.ldb"
+)
+
 var (
 	errFileOpen = errors.New("leveldb/storage: file still open")
 	errReadOnly = errors.New("leveldb/storage: storage is read-only")
@@ -49,40 +53,6 @@ type int64Slice []int64
 func (p int64Slice) Len() int           { return len(p) }
 func (p int64Slice) Less(i, j int) bool { return p[i] < p[j] }
 func (p int64Slice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
-
-func (fs *fileStorage) getRealPath(name string) string {
-	var fdNum uint64
-	fmt.Sscanf(filepath.Base(name), "%d.ldb", &fdNum)
-	N := uint64(len(fs.dataPaths))
-	return filepath.Join(fs.dataPaths[fdNum % N], fmt.Sprintf("%08d.ldb", fdNum))
-}
-
-func (fs *fileStorage) MyOpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
-	if len(fs.dataPaths) > 0 && strings.HasSuffix(name, ".ldb") {
-		realName := fs.getRealPath(name)
-		return os.OpenFile(realName, flag, perm)
-	} else {
-		return os.OpenFile(name, flag, perm)
-	}
-}
-
-func (fs *fileStorage) MyRemove(name string) error {
-	if len(fs.dataPaths) > 0 && strings.HasSuffix(name, ".ldb") {
-		realName := fs.getRealPath(name)
-		return os.Remove(realName)
-	} else {
-		return os.Remove(name)
-	}
-}
-
-func (fs *fileStorage) MyStat(name string) (os.FileInfo, error)  {
-	if len(fs.dataPaths) > 0 && strings.HasSuffix(name, ".ldb") {
-		realName := fs.getRealPath(name)
-		return os.Stat(realName)
-	} else {
-		return os.Stat(name)
-	}
-}
 
 func writeFileSynced(filename string, data []byte, perm os.FileMode) error {
 	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
@@ -423,7 +393,7 @@ func (fs *fileStorage) GetMeta() (FileDesc, error) {
 			}
 			return nil, err
 		}
-		if _, err := fs.MyStat(filepath.Join(fs.path, fsGenName(fd))); err != nil {
+		if _, err := fs.MultiStat(filepath.Join(fs.path, fsGenName(fd))); err != nil {
 			if os.IsNotExist(err) {
 				fs.log(fmt.Sprintf("%s: missing target file: %s", name, fd))
 				err = os.ErrNotExist
@@ -525,28 +495,6 @@ func (fs *fileStorage) GetMeta() (FileDesc, error) {
 	return FileDesc{}, curErr
 }
 
-func (fs *fileStorage) MyList(ft FileType) (fds []FileDesc, err error) {
-	for _, path := range fs.dataPaths {
-		dir, err := os.Open(path)
-		if err != nil {
-			return fds, err
-		}
-		names, err := dir.Readdirnames(0)
-		// Close the dir first before checking for Readdirnames error.
-		if cerr := dir.Close(); cerr != nil {
-			fs.log(fmt.Sprintf("close dir: %v", cerr))
-		}
-		if err == nil {
-			for _, name := range names {
-				if fd, ok := fsParseName(name); ok && fd.Type&ft != 0 {
-					fds = append(fds, fd)
-				}
-			}
-		}
-	}
-	return
-}
-
 func (fs *fileStorage) List(ft FileType) (fds []FileDesc, err error) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -568,7 +516,7 @@ func (fs *fileStorage) List(ft FileType) (fds []FileDesc, err error) {
 				fds = append(fds, fd)
 			}
 		}
-		otherSSTs, oErr := fs.MyList(ft)
+		otherSSTs, oErr := fs.MultiList(ft)
 		if oErr == nil {
 			fds = append(fds, otherSSTs...)
 		} else {
@@ -588,7 +536,7 @@ func (fs *fileStorage) Open(fd FileDesc) (Reader, error) {
 	if fs.open < 0 {
 		return nil, ErrClosed
 	}
-	of, err := fs.MyOpenFile(filepath.Join(fs.path, fsGenName(fd)), os.O_RDONLY, 0)
+	of, err := fs.MultiOpenFile(filepath.Join(fs.path, fsGenName(fd)), os.O_RDONLY, 0)
 	if err != nil {
 		if fsHasOldName(fd) && os.IsNotExist(err) {
 			of, err = os.OpenFile(filepath.Join(fs.path, fsGenOldName(fd)), os.O_RDONLY, 0)
@@ -616,7 +564,7 @@ func (fs *fileStorage) Create(fd FileDesc) (Writer, error) {
 	if fs.open < 0 {
 		return nil, ErrClosed
 	}
-	of, err := fs.MyOpenFile(filepath.Join(fs.path, fsGenName(fd)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	of, err := fs.MultiOpenFile(filepath.Join(fs.path, fsGenName(fd)), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return nil, err
 	}
@@ -637,7 +585,7 @@ func (fs *fileStorage) Remove(fd FileDesc) error {
 	if fs.open < 0 {
 		return ErrClosed
 	}
-	err := fs.MyRemove(filepath.Join(fs.path, fsGenName(fd)))
+	err := fs.MultiRemove(filepath.Join(fs.path, fsGenName(fd)))
 	if err != nil {
 		if fsHasOldName(fd) && os.IsNotExist(err) {
 			if e1 := os.Remove(filepath.Join(fs.path, fsGenOldName(fd))); !os.IsNotExist(e1) {
@@ -733,7 +681,7 @@ func fsGenName(fd FileDesc) string {
 	case TypeJournal:
 		return fmt.Sprintf("%06d.log", fd.Num)
 	case TypeTable:
-		return fmt.Sprintf("%08d.ldb", fd.Num)
+		return fmt.Sprintf(SST_FORMAT, fd.Num)
 	case TypeTemp:
 		return fmt.Sprintf("%06d.tmp", fd.Num)
 	default:
